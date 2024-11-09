@@ -1,0 +1,166 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Xml.Linq;
+
+public class Service
+{
+    public int Id { get; set; }
+    public int? ParentId { get; set; }
+    public required string Name { get; set; }
+    public decimal? Price { get; set; }
+    public DateTime? Date { get; set; }
+    public List<Service> Children { get; set; } = new List<Service>();
+}
+
+public class ServiceReport
+{
+    public decimal TotalAmount { get; set; }
+    public required List<Service> Services { get; set; }
+}
+
+public class ServiceManager
+{
+    public static List<Service> ParseServicesFromFile(string filePath)
+    {
+        var services = new List<Service>();
+        var lines = File.ReadAllLines(filePath);
+
+        foreach (var line in lines)
+        {
+            // Парсим каждую строку, извлекая данные
+            var parts = line.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 3) continue; // Пропускаем некорректные строки
+
+            int id = int.Parse(parts[0].Split('=')[1].Trim(' ', '\''));
+            string name = parts[1].Split('=')[1].Trim(' ', '\'');
+            int? parentId = parts.Length > 2 && parts[2].Contains("parent")
+                ? (int?)int.Parse(parts[2].Split('=')[1].Trim(' ', '\''))
+                : null;
+            decimal? price = null;
+
+            if (parts.Length > 3 && parts[3].Contains("price"))
+            {
+                // Извлекаем часть строки после 'price=', удаляем лишние пробелы и символы
+                string priceString = parts[3].Split('=')[1].Trim(' ', '\'', '>', '<');
+
+                // Попробуем преобразовать строку в decimal
+                if (decimal.TryParse(priceString, out decimal parsedPrice))
+                {
+                    price = parsedPrice;
+                }
+                else
+                {
+                    // Если парсинг не удался, оставляем price как null
+                    Console.WriteLine($"Не удалось преобразовать строку '{priceString}' в decimal.");
+                }
+            }
+
+            services.Add(new Service
+            {
+                Id = id,
+                ParentId = parentId,
+                Name = name,
+                Price = price
+            });
+        }
+
+        // Строим иерархическую структуру
+        var serviceDict = services.ToDictionary(s => s.Id);
+        foreach (var service in services)
+        {
+            if (service.ParentId.HasValue)
+            {
+                serviceDict[service.ParentId.Value].Children.Add(service);
+            }
+        }
+
+        return services.Where(s => !s.ParentId.HasValue).ToList(); // Возвращаем корневые элементы
+    }
+
+    public static ServiceReport GenerateReport(List<Service> services, DateTime? startDate, DateTime? endDate)
+    {
+        decimal totalAmount = 0;
+        var filteredServices = new List<Service>();
+
+        foreach (var service in services)
+        {
+            decimal? price = service.Price;
+            // Фильтруем по времени (если указаны)
+            if (startDate.HasValue && service.Date.HasValue && service.Date.Value < startDate.Value) continue;
+            if (endDate.HasValue && service.Date.HasValue && service.Date.Value > endDate.Value) continue;
+
+            if (price.HasValue)
+            {
+                totalAmount += price.Value;
+                filteredServices.Add(service);
+            }
+            ProcessChildren(service, ref totalAmount, ref filteredServices, startDate, endDate);
+        }
+
+        return new ServiceReport
+        {
+            TotalAmount = totalAmount,
+            Services = filteredServices
+        };
+    }
+
+    private static void ProcessChildren(Service service, ref decimal totalAmount, ref List<Service> filteredServices, DateTime? startDate, DateTime? endDate)
+    {
+        foreach (var child in service.Children)
+        {
+            decimal? price = child.Price;
+            if (startDate.HasValue && child.Date.HasValue && child.Date.Value < startDate.Value) continue;
+            if (endDate.HasValue && child.Date.HasValue && child.Date.Value > endDate.Value) continue;
+
+            if (price.HasValue)
+            {
+                totalAmount += price.Value;
+                filteredServices.Add(child);
+            }
+
+            ProcessChildren(child, ref totalAmount, ref filteredServices, startDate, endDate);
+        }
+    }
+
+    public static void GenerateXmlReport(ServiceReport report, string outputPath)
+    {
+        var rootElement = new XElement("ServiceReport",
+            new XElement("TotalAmount", report.TotalAmount),
+            new XElement("Services", report.Services.Select(service => new XElement("Service",
+                new XElement("Id", service.Id),
+                new XElement("Name", service.Name),
+                service.Price.HasValue ? new XElement("Price", service.Price.Value) : null,
+                new XElement("Children", service.Children.Select(child => new XElement("Service",
+                    new XElement("Id", child.Id),
+                    new XElement("Name", child.Name),
+                    child.Price.HasValue ? new XElement("Price", child.Price.Value) : null
+                )))
+            ))));
+        
+        rootElement.Save(outputPath);
+    }
+}
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        string inputFile = "services.txt";  // Путь к файлу с данными
+        string outputFile = "report.xml";   // Путь к выходному XML файлу
+        DateTime? startDate = new DateTime(2024, 1, 1);  // Пример начала периода
+        DateTime? endDate = new DateTime(2024, 12, 31);   // Пример конца периода
+
+        // Чтение и парсинг данных из файла
+        var services = ServiceManager.ParseServicesFromFile(inputFile);
+
+        // Генерация отчета
+        var report = ServiceManager.GenerateReport(services, startDate, endDate);
+
+        // Генерация XML отчета
+        ServiceManager.GenerateXmlReport(report, outputFile);
+
+        Console.WriteLine("Отчет успешно сгенерирован!");
+    }
+}
